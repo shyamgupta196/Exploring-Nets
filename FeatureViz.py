@@ -4,17 +4,18 @@ import torch
 from torchvision import transforms as T
 from torchvision.datasets import ImageFolder
 from torchvision.utils import make_grid
-
-from optuna.visualization import plot_contour, plot_edf, plot_intermediate_values, plot_optimization_history, plot_parallel_coordinate, plot_param_importances, plot_slice
 import matplotlib.pyplot as plt
 import torch.nn as nn
-import torchvision
+import torchvision 
+from torch.autograd import Variable
 from torch.utils.data import DataLoader, Subset
 import sys
-import os
-import time
+from tqdm import tqdm
 import seaborn as sns
-import optuna
+import os
+# import wandb
+
+# wandb.init(project="test-project", entity="sankhyiki")
 
 seed_value = 47
 torch.seed = seed_value
@@ -23,14 +24,15 @@ torch.seed = seed_value
 PATH = r'C:\Users\Asus\Documents\deep learning\deep_learn\starters\PetImages'
 
 BATCH_SIZE = 64
-tsfm = T.Compose([T.ToTensor(), T.Resize((200, 200)), T.Normalize(0, 1)])
+tsfm = T.Compose([T.Resize((200, 200)), T.ToTensor(),T.Normalize(0, 1)])
 folder = ImageFolder(PATH, transform=tsfm)
 loader = DataLoader(folder, batch_size=BATCH_SIZE)
 
 img, lab = next(iter(loader))
-val_fol = ImageFolder(
-    r'C:\Users\Asus\Documents\deep learning\deep_learn\starters\PetTest')
+val_fol = ImageFolder(r'C:\Users\Asus\Documents\deep learning\deep_learn\starters\PetTest')
 val_loader = DataLoader(val_fol, batch_size=BATCH_SIZE)
+
+
 
 # plt.imshow(make_grid(img).permute(1, 2, 0).squeeze())
 # plt.show()
@@ -133,11 +135,8 @@ val_loader = DataLoader(val_fol, batch_size=BATCH_SIZE)
 # lets start !!
 
 class Net(nn.Module):
-    def __init__(self, img=None, label=None):
+    def __init__(self):
         super(Net, self).__init__()
-        self.data = img
-        mapper = {'Cat': 0, 'Dog': 1}
-        self.lab = label
 
         self.convs = nn.Sequential(
             self.conv_block(3, 5, 5, 1),
@@ -151,8 +150,6 @@ class Net(nn.Module):
         if final:
             return nn.Sequential(nn.Linear(in_channels, out_channels),
                                  nn.Softmax(),
-                                 #  nn.Linear(out_channels, 2),
-                                 #  nn.Softmax()
                                  )
         return nn.Sequential(nn.Conv2d(in_channels, out_channels, kernel_size=k_size, padding=padding),
                              nn.MaxPool2d(3),
@@ -175,102 +172,39 @@ class Net(nn.Module):
         return x
 
 
-# this is 388 in length so i have to limit the number of batches that are getting loaded!!!!
-# print(len(loader))
-# pred = Net()(img)
-# model = Net()
-# print(pred)
-# print(torch.round(pred))
-# print(torch.argmax(pred, dim=-1))
-# print(torch.round(torch.max(pred)))
-criterion = nn.BCELoss()
-# if batches go above this >>>> the loop breaksss
-N_TRAIN_SAMPLES = BATCH_SIZE * 40
-N_VALID_SAMPLES = BATCH_SIZE * 5
+model = Net()
 
+learning_rate = 0.003
+optim = torch.optim.Adam(model.parameters(),lr=learning_rate)
+criterion = nn.BCEWithLogitsLoss()
 
-def train_model(model, optimizer, train_loader):
-    model.train()
-    losses = []
-    for batch_idx, (data, target) in enumerate(train_loader):
-        if batch_idx * BATCH_SIZE >= N_TRAIN_SAMPLES:
-            break
-        data, target = data.view(
-            data.size(0), -1).to(DEVICE), target.to(DEVICE)
+model.train()
+# wandb.watch(model)
+DEVICE ='cpu'
 
-        optimizer.zero_grad()
-        output = model(data)
-        loss = criterion(output, target)
-        loss.backward()
-        losses.append(loss)
-        optimizer.step()
+for (img, target) in tqdm(loader):
+    img, target = img.to(DEVICE), target.to(DEVICE).float()
+    correct = 0
+    optim.zero_grad()
+    output = model(img)
+    pred = output.argmax(dim=1, keepdim=True).float()
+    loss = criterion(pred, target)
+    correct += pred.eq(target.view_as(pred)).sum().item()    
+    loss.backward()
+    optim.step()
 
-        # == the actual targetsss
-        accuracy = torch.sum(target) - \
-            torch.sum(torch.argmax(output))/BATCH_SIZE
-        print(accuracy)
-        return losses
-
-
-def eval_model(model, valid_loader):
+    train_accuracy = correct/len(loader.dataset)
+    # wandb.log({'loss':loss,'accuracy':accuracy})
+    print(train_accuracy)
     model.eval()
     correct = 0
     with torch.no_grad():
-        for batch_idx, (data, target) in enumerate(valid_loader):
-            if batch_idx * BATCH_SIZE >= N_VALID_SAMPLES:
-                break
-            data, target = data.view(
-                data.size(0), -1).to(DEVICE), target.to(DEVICE)
-            output = model(data)
-            pred = output.argmax(dim=1, keepdim=True)
+        for (img, target) in tqdm(val_loader):
+            img, target = img.to(DEVICE), target.to(DEVICE).float()
+            output = model(img)
+            # output = torch.argmax(output,dim=1)
+            pred = output.argmax(dim=1, keepdim=True).float()
             correct += pred.eq(target.view_as(pred)).sum().item()
-    accuracy = correct / min(len(valid_loader.dataset), N_VALID_SAMPLES)
-    return accuracy
+            # wandb.log({'correct': correct})
+            val_accuracy = correct / len(val_loader.dataset)
 
-
-DIR = ".."
-DEVICE = torch.device("cpu")
-
-
-def objective(trial):
-
-    model = Net().to(DEVICE)
-    # Sample the initial learning rate from [1e-5, 1e-1] in log space.
-    optimizer = torch.optim.Adam(
-        nn.ParameterList(model.parameters()), trial.suggest_float(
-            "lr_init", 1e-5, 1e-1, log=True)
-    )
-
-    for step in range(10):
-        model.train()
-        losses = train_model(model, optimizer, loader)
-
-        accuracy = eval_model(model, val_loader)
-
-        # Report intermediate objective value.
-        trial.report(accuracy, step)
-        trial.report(losses, step)
-        # Handle pruning based on the intermediate value.
-        if trial.should_prune():
-            raise optuna.TrialPruned()
-
-    return accuracy
-
-
-start = time.time()
-study = optuna.create_study(
-    direction="maximize",
-    sampler=optuna.samplers.TPESampler(seed=47),
-    pruner=optuna.pruners.MedianPruner(),
-)
-study.optimize(objective, n_trials=20, timeout=600)
-end = time.time()
-time_taken = end-start
-print(f'time_taken: {time_taken}')
-
-plot_optimization_history(study)
-plot_parallel_coordinate(study, params=["lr_init", "n_units_l0"])
-plot_contour(study)
-# model = Net()
-# pred = model(img)
-# print(pred)
