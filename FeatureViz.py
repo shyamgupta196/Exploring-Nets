@@ -13,9 +13,10 @@ import sys
 from tqdm import tqdm
 import seaborn as sns
 import os
-# import wandb
+import wandb
 
-# wandb.init(project="test-project", entity="sankhyiki")
+
+wandb.init(project="test-project", entity="sankhyiki")
 
 seed_value = 47
 torch.seed = seed_value
@@ -23,14 +24,16 @@ torch.seed = seed_value
 
 PATH = r'C:\Users\Asus\Documents\deep learning\deep_learn\starters\PetImages'
 
-BATCH_SIZE = 64
+BATCH_SIZE = 124
 tsfm = T.Compose([T.Resize((200, 200)), T.ToTensor(),T.Normalize(0, 1)])
 folder = ImageFolder(PATH, transform=tsfm)
-loader = DataLoader(folder, batch_size=BATCH_SIZE)
+loader = DataLoader(folder, batch_size=BATCH_SIZE,shuffle=True)
 
+VAL_BATCH_SIZE = 10
 img, lab = next(iter(loader))
-val_fol = ImageFolder(r'C:\Users\Asus\Documents\deep learning\deep_learn\starters\PetTest')
-val_loader = DataLoader(val_fol, batch_size=BATCH_SIZE)
+VAL_PATH = r'C:\Users\Asus\Documents\deep learning\deep_learn\starters\PetTest'
+val_fol = ImageFolder(VAL_PATH,transform=tsfm)
+val_loader = DataLoader(val_fol, batch_size=VAL_BATCH_SIZE,shuffle=True)
 
 
 
@@ -134,17 +137,19 @@ val_loader = DataLoader(val_fol, batch_size=BATCH_SIZE)
 # for that we need to make an NN first !
 # lets start !!
 
-class Net(nn.Module):
-    def __init__(self):
-        super(Net, self).__init__()
-
-        self.convs = nn.Sequential(
-            self.conv_block(3, 5, 5, 1),
-            self.conv_block(5, 10, 5, 1),
-            self.conv_block(10, 12, 5, 1),
+class Net(nn.Module):                   # remove one conv layer !!! will work for us !!
+    def __init__(self):# remove one conv layer !!! will work for us !!
+        super(Net, self).__init__()# remove one conv layer !!! will work for us !!
+        self.convs = nn.Sequential(# remove one conv layer !!! will work for us !!
+            self.conv_block(3, 5, 5, 1),# remove one conv layer !!! will work for us !!
+            self.conv_block(5, 10, 5, 1),# remove one conv layer !!! will work for us !!
+            self.conv_block(10, 12, 5, 1),# remove one conv layer !!! will work for us !!
 
         )
-        self.fc = self.conv_block(432, 2, final=True)
+        
+
+        self.fc = self.conv_block(432, BATCH_SIZE, final=True)
+
 
     def conv_block(self, in_channels, out_channels, k_size=5, padding=1, final: bool = False):
         if final:
@@ -156,9 +161,9 @@ class Net(nn.Module):
                              nn.Dropout(0.2),
                              nn.BatchNorm2d(out_channels),
                              nn.ReLU()
-                             )
+                            )
 
-    def forward(self, x):
+    def forward(self, x,val=False):
         print(x.shape)
         x = self.convs(x)
         # write FORMULA FOR CONV-------------
@@ -166,45 +171,62 @@ class Net(nn.Module):
         # after 3 conv layers
         # 194*194 having 12 channels
         print(x.shape)
-        x = x.view(64, 6*6*12)
-        # flatten
-        x = self.fc(x)
+        if val:
+            x = x.view(VAL_BATCH_SIZE, 6*6*12)
+            self.fc = self.conv_block(432, VAL_BATCH_SIZE, final=True)
+            x = self.fc(x)
+        else:
+            x = x.view(BATCH_SIZE, 6*6*12)
+            # flatten
+            x = self.fc(x)
         return x
 
 
 model = Net()
 
-learning_rate = 0.003
+learning_rate = 0.01
 optim = torch.optim.Adam(model.parameters(),lr=learning_rate)
-criterion = nn.BCEWithLogitsLoss()
+criterion = nn.HingeEmbeddingLoss()
 
 model.train()
-# wandb.watch(model)
+wandb.watch(model)
 DEVICE ='cpu'
 
-for (img, target) in tqdm(loader):
+for batch_idx,(img, target) in tqdm(enumerate(loader)):
+    
+    if batch_idx == 80: # we had 200 batches
+        break
+    print(type(img))
+    print(type(target))
     img, target = img.to(DEVICE), target.to(DEVICE).float()
     correct = 0
     optim.zero_grad()
     output = model(img)
-    pred = output.argmax(dim=1, keepdim=True).float()
-    loss = criterion(pred, target)
+    pred = output.argmax(dim=1, keepdim=True).float().view(BATCH_SIZE)
+    loss = Variable(criterion(pred, target),requires_grad=True)
     correct += pred.eq(target.view_as(pred)).sum().item()    
     loss.backward()
     optim.step()
 
     train_accuracy = correct/len(loader.dataset)
-    # wandb.log({'loss':loss,'accuracy':accuracy})
-    print(train_accuracy)
+    wandb.log({'loss':loss,'train_accuracy':correct})
+    print(f'train_accuracy {train_accuracy}')
     model.eval()
     correct = 0
     with torch.no_grad():
         for (img, target) in tqdm(val_loader):
             img, target = img.to(DEVICE), target.to(DEVICE).float()
-            output = model(img)
-            # output = torch.argmax(output,dim=1)
-            pred = output.argmax(dim=1, keepdim=True).float()
+            val_output = model(img,val=True)
+            # val_output = torch.argmax(val_output,dim=1)
+            pred = val_output.argmax(dim=1, keepdim=True).float().view(VAL_BATCH_SIZE)
             correct += pred.eq(target.view_as(pred)).sum().item()
-            # wandb.log({'correct': correct})
+            wandb.log({'val_correct': correct})
             val_accuracy = correct / len(val_loader.dataset)
 
+torch.save(model.parameters(),'model_i_made.pth') ## err here TypeError: cannot pickle 'generator' object
+
+### well whatever 
+# what i am appreciating is "you made it" 
+# and i am proud of you 
+# but the accuracy is not very good 
+# so i have to work on that , what is the model learning ??
